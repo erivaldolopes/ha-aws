@@ -1,0 +1,22 @@
+#!/bin/sh
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+STATEFILE=/var/run/ha-keepalived.state
+
+if [ -s "$STATEFILE" ]; then
+    . "$STATEFILE"
+    case "$STATE" in
+        "BACKUP"|"MASTER"|"FAULT")
+                service haproxy status
+                exit $?
+                ;;
+        *|"")
+                logger -t ha-keepalived "Unknown state: '$STATE'"
+                exit 1
+                ;;
+    esac
+fi
+
+service haproxy status
+exit $?

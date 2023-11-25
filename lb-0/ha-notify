@@ -1,0 +1,60 @@
+#!/bin/bash
+
+#Set the internal or private DNS names of the HA nodes here
+HA_NODE_1=ip-172-31-29-181.ec2.internal
+HA_NODE_2=ip-172-31-23-108.ec2.internal
+
+#Set the ElasticIP ID Value here
+ALLOCATION_ID=eipalloc-0acfe4ba1ff4ab1d6
+###############################################################
+
+PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
+
+#Values passed in from keepalived
+TYPE=$1
+NAME=$2
+STATE=$3
+
+#Get the instance DNS NAME of the other node
+OTHER_INSTANCE_DNS_NAME=$HA_NODE_2
+
+#Get the local instance ID
+INSTANCE_ID=`aws ec2 describe-instances --filter "Name=private-dns-name,Values=$HA_NODE_1" | jq -r '.Reservations[]|.Instances[]|.InstanceId'`
+
+#Get the instance ID of the other node
+OTHER_INSTANCE_ID=`aws ec2 describe-instances --filter "Name=private-dns-name,Values=$OTHER_INSTANCE_DNS_NAME" | jq -r '.Reservations[]|.Instances[]|.InstanceId'`
+
+#Get the ASSOCIATION_ID of the ElasticIP to the Instance
+ASSOCIATION_ID=`aws ec2 describe-addresses --allocation-id $ALLOCATION_ID | jq -r '.Addresses[]|.AssociationId'`
+
+#Get the INSTANCE_ID of the system the ElasticIP is associated with
+EIP_INSTANCE=`aws ec2 describe-addresses --allocation-id $ALLOCATION_ID | jq -r '.Addresses[]|.InstanceId'`
+
+STATEFILE=/var/run/ha-keepalived.state
+
+logger -t ha-keepalived "Params and Values: TYPE=$TYPE -- NAME=$NAME -- STATE=$STATE -- ALLOCATION_ID=$ALLOCATION_ID -- INSTANCE_ID=$INSTANCE_ID -- OTHER_INSTANCE_ID=$OTHER_INSTANCE_ID -- EIP_INSTANCE=$EIP_INSTANCE -- ASSOCIATION_ID=$ASSOCIATION_ID -- STATEFILE=$STATEFILE"
+
+logger -t ha-keepalived "Transition to state '$STATE' on VRRP instance '$NAME'."
+
+case $STATE in
+        "MASTER")
+                  aws ec2 disassociate-address --association-id $ASSOCIATION_ID
+                  aws ec2 associate-address --allocation-id $ALLOCATION_ID --instance-id $INSTANCE_ID
+                  service haproxy start ||:
+                  echo "STATE=$STATE" > $STATEFILE
+                  exit 0
+                  ;;
+        "BACKUP"|"FAULT")
+                  if [ "$INSTANCE_ID" = "$EIP_INSTANCE" ]
+                  then
+                    aws ec2 disassociate-address --association-id $ASSOCIATION_ID
+                    aws ec2 associate-address --allocation-id $ALLOCATION_ID --instance-id $OTHER_INSTANCE_ID
+                    logger -t ha-keepalived "BACKUP Path Transfer from $INSTANCE_ID to $OTHER_INSTANCE_ID"
+                  fi
+                  echo "STATE=$STATE" > $STATEFILE
+                  exit 0
+                  ;;
+        *)        logger -t ha-keepalived "Unknown state: '$STATE'"
+                  exit 1
+                  ;;
+esac
